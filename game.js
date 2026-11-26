@@ -15,7 +15,7 @@
   const COLORS = {
     K: "#140e12", // black fur
     S: "#4e4a5e", // fur sheen
-    A: "#2a1f28", // ear
+    A: "#2a2030", // ear
     T: "#e28c46", // tan
     D: "#b8602a", // dark tan
     N: "#000000", // nose
@@ -31,18 +31,24 @@
     o: "#c79a1e",
   };
 
-  // Head, facing right (snout on the right, ear flopping back-left).
+  // Head in profile, facing right: domed skull, tan eyebrow, long snout with
+  // tan muzzle, nose at the tip and a long floppy ear hanging below the neck.
+  // 14x14 pixels, drawn bigger than a cell so the snout pokes forward.
   const HEAD_RIGHT = [
-    "...KKKK...",
-    "..KSSSKK..",
-    ".KKKTTKKK.",
-    ".KKKWEKKKK",
-    "AAKKKKKKKN",
-    "AAAKTTTTTN",
-    "AAA.TTTTT.",
-    ".AA..TPT..",
-    "..A.......",
-    "..........",
+    "..............",
+    ".....KKKK.....",
+    "....KSSSKK....",
+    "KKKKKKKKKKK...",
+    "KKKKKKKTTKKK..",
+    "KKKKKKWEKKKKK.",
+    "KKAAKKKKKKKSKN",
+    "KAAAAKKKKKKKNN",
+    "KAAAAKKTTTTTTT",
+    "KAAAAKKTTTTTD.",
+    "KAAAAKKKTTTD..",
+    "KAAAA..KTPT...",
+    ".AAAA.........",
+    "..AA..........",
   ];
 
   const SAUSAGE = [
@@ -59,15 +65,32 @@
   ];
   const GOLDEN = SAUSAGE.map(r => r.replace(/R/g, "G").replace(/H/g, "g").replace(/X/g, "o"));
 
-  const rotCCW = m => m.map((_, r) => m.map(row => row[SP - 1 - r]).join(""));
-  const rotCW = m => m.map((_, r) => m.map((_, c) => m[SP - 1 - c][r]).join(""));
   const mirror = m => m.map(row => [...row].reverse().join(""));
+
+  // Head seen from above, facing up: long narrow snout, tan eyebrows and
+  // both ears flopping out to the sides.
+  const HEAD_UP = [
+    "......NN......",
+    ".....TNNT.....",
+    ".....TKKT.....",
+    ".....TKKT.....",
+    "....KKSSKK....",
+    "....KKSSKK....",
+    "...KEWKKWEK...",
+    "...KTKKKKTK...",
+    ".AAKKKKKKKKAA.",
+    "AAAKKKKKKKKAAA",
+    "AAAKKKKKKKKAAA",
+    "AAAKKKKKKKKAAA",
+    ".AAKKKKKKKKAA.",
+    "...KKKKKKKK...",
+  ];
 
   const HEADS = {
     right: HEAD_RIGHT,
     left: mirror(HEAD_RIGHT),
-    up: rotCCW(HEAD_RIGHT),
-    down: rotCW(HEAD_RIGHT),
+    up: HEAD_UP,
+    down: [...HEAD_UP].reverse(),
   };
 
   const DIRS = {
@@ -315,10 +338,11 @@
 
   // ---------- rendering ----------
   function drawSprite(map, cx, cy, offX = 0, offY = 0, size = PX) {
-    const pad = (SP * size - CELL) / 2; // larger sprites stay centred on the cell
-    for (let r = 0; r < SP; r++) {
+    const n = map.length;
+    const pad = (n * size - CELL) / 2; // larger sprites stay centred on the cell
+    for (let r = 0; r < n; r++) {
       const row = map[r];
-      for (let c = 0; c < SP; c++) {
+      for (let c = 0; c < n; c++) {
         const ch = row[c];
         if (ch === ".") continue;
         ctx.fillStyle = COLORS[ch];
@@ -369,15 +393,24 @@
     }
   }
 
-  function legs(seg, towardHead, phase) {
-    // little tan paws sticking out either side, shuffling as the dog walks
+  function legs(seg, towardHead, phase, front) {
     const shift = phase ? 1 : -1;
     if (towardHead === "left" || towardHead === "right") {
-      const x = 3 + shift;
-      px(seg.x, seg.y, x, -2, 3, 3, COLORS.T);
-      px(seg.x, seg.y, x - 2 * shift, SP - 1, 3, 3, COLORS.T);
-      px(seg.x, seg.y, x, -2, 3, 1, COLORS.D);
-      px(seg.x, seg.y, x - 2 * shift, SP + 1, 3, 1, COLORS.D);
+      // side view: two short stubby legs under the belly, stepping in turn
+      const fwd = towardHead === "right" ? 1 : -1;
+      [1, 6].forEach((lx, i) => {
+        const lifted = (i === 0) === phase;
+        const len = lifted ? 2 : 3;
+        px(seg.x, seg.y, lx, SP - 2, 3, 2, COLORS.K);            // upper leg
+        px(seg.x, seg.y, lx, SP, 3, len - 1, COLORS.T);           // tan lower leg
+        px(seg.x, seg.y, fwd > 0 ? lx + 1 : lx - 1, SP + len - 1, 3, 1, COLORS.D); // paw
+      });
+      if (front) {
+        // tan chest like the real Otto
+        const cx = towardHead === "right" ? 5 : 1;
+        px(seg.x, seg.y, cx, SP - 4, 4, 3, COLORS.T);
+        px(seg.x, seg.y, cx, SP - 2, 4, 1, COLORS.D);
+      }
     } else {
       const y = 3 + shift;
       px(seg.x, seg.y, -2, y, 3, 3, COLORS.T);
@@ -399,10 +432,6 @@
     const n = snake.length;
     const phase = stepCount % 2 === 0;
 
-    // legs first so the body overlaps them
-    if (n >= 3) legs(snake[1], neighbourDir(snake[1], snake[0]), phase);
-    if (n >= 4) legs(snake[n - 2], neighbourDir(snake[n - 2], snake[n - 3]), !phase);
-
     // body segments
     for (let i = 1; i < n - 1; i++) {
       const seg = snake[i];
@@ -411,16 +440,28 @@
       sheen(seg, sides, 1);
     }
 
+    // short legs: front pair behind the head, back pair before the tail
+    if (n >= 3) legs(snake[1], neighbourDir(snake[1], snake[0]), phase, true);
+    if (n >= 4) legs(snake[n - 2], neighbourDir(snake[n - 2], snake[n - 3]), !phase, false);
+
     // tail: thinner, tapering, wagging
     const tail = snake[n - 1];
     const toBody = neighbourDir(tail, snake[n - 2]);
-    tube(tail, [toBody], 3, COLORS.K);
-    const wag = Math.sin(now / 90) > 0 ? 1 : -1;
+    // tail: a thin whip that tapers and wags upward, like a dachshund's
+    const wag = Math.sin(now / 90) > 0 ? 1 : 0;
     const tip = OPPOSITE[toBody];
-    if (tip === "left") px(tail.x, tail.y, 0, 4 + wag, 3, 2, COLORS.K);
-    if (tip === "right") px(tail.x, tail.y, SP - 3, 4 + wag, 3, 2, COLORS.K);
-    if (tip === "up") px(tail.x, tail.y, 4 + wag, 0, 2, 3, COLORS.K);
-    if (tip === "down") px(tail.x, tail.y, 4 + wag, SP - 3, 2, 3, COLORS.K);
+    if (tip === "left" || tip === "right") {
+      const r = tip === "right";
+      px(tail.x, tail.y, r ? 0 : 5, 3, 5, 3, COLORS.K);
+      px(tail.x, tail.y, r ? 4 : 2, 2 - wag, 3, 2, COLORS.K);
+      px(tail.x, tail.y, r ? 7 : 0, 1 - wag * 2, 3, 2, COLORS.K);
+      px(tail.x, tail.y, r ? 0 : 5, 5, 4, 1, COLORS.D);
+    } else {
+      const d = tip === "down";
+      px(tail.x, tail.y, 3, d ? 0 : 5, 4, 5, COLORS.K);
+      px(tail.x, tail.y, 4 + wag, d ? 4 : 2, 2, 4, COLORS.K);
+      px(tail.x, tail.y, 4 - wag, d ? 7 : 0, 2, 3, COLORS.K);
+    }
 
     // neck: fill gap between head and first body piece
     const head = snake[0];

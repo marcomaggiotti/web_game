@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Wiener Snake</title>
+  <title>Otto il Bassotto diventa infinito</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
@@ -13,9 +13,9 @@
   <div class="crt">
     <!-- LANDING -->
     <section id="landing" class="screen active">
-      <h1 class="title"><span>WIENER</span><span>SNAKE</span></h1>
+      <h1 class="title"><span class="l1">OTTO IL BASSOTTO</span><span class="l2">DIVENTA</span><span class="l3">INFINITO</span></h1>
       <div class="portrait">
-        <img src="assets/dachshund-8bit.png" alt="8-bit pixel portrait of a black and tan dachshund" width="80" height="106">
+        <canvas id="hero" width="80" height="106" role="img" aria-label="Otto the dachshund in 8-bit pixel art, eating a sausage"></canvas>
       </div>
       <button id="startBtn" class="btn blink">&#9654; START GAME</button>
       <p class="hint">ARROWS / WASD / SWIPE</p>
@@ -47,6 +47,7 @@
       </div>
     </section>
   </div>
+  <script src="landing.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

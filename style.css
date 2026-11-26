@@ -59,14 +59,16 @@ body {
 .title {
   margin: 8px 0 16px;
   text-align: center;
-  font-size: clamp(26px, 8vw, 48px);
+  font-size: clamp(20px, 6.4vw, 38px);
   line-height: 1.25;
   color: var(--accent);
   text-shadow: 4px 4px 0 var(--tan-dark), 8px 8px 0 #000;
   letter-spacing: 2px;
 }
 .title span { display: block; }
-.title span:last-child { color: var(--tan); text-shadow: 4px 4px 0 #6b2c10, 8px 8px 0 #000; }
+.title .l1 { font-size: 0.72em; }
+.title .l2 { font-size: 0.55em; color: var(--pink); text-shadow: 3px 3px 0 #000; margin: 6px 0; }
+.title .l3 { color: var(--tan); text-shadow: 4px 4px 0 #6b2c10, 8px 8px 0 #000; }
 
 .portrait {
   border: 6px solid var(--text);
@@ -75,7 +77,7 @@ body {
   margin: 12px 0 32px;
   line-height: 0;
 }
-.portrait img {
+.portrait canvas {
   display: block;
   width: min(320px, 70vw);
   height: auto;
