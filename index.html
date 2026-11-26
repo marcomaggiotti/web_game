@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Otto il Bassotto diventa infinito</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="crt">
+    <!-- LANDING -->
+    <section id="landing" class="screen active">
+      <h1 class="title"><span class="l1">OTTO IL BASSOTTO</span><span class="l2">DIVENTA</span><span class="l3">INFINITO</span></h1>
+      <div class="portrait">
+        <canvas id="hero" width="80" height="106" role="img" aria-label="Otto the dachshund in 8-bit pixel art, eating a sausage"></canvas>
+      </div>
+      <button id="startBtn" class="btn blink">&#9654; START GAME</button>
+      <p class="hint">ARROWS / WASD / SWIPE</p>
+      <p class="hi">HI-SCORE <span id="hiLanding">0</span></p>
+    </section>
+
+    <!-- GAME -->
+    <section id="game" class="screen">
+      <div class="hud">
+        <span>SCORE <b id="score">0</b></span>
+        <span>LENGTH <b id="length">0</b></span>
+        <span>HI <b id="hi">0</b></span>
+      </div>
+      <div class="board">
+        <canvas id="canvas" width="600" height="600"></canvas>
+        <div id="overlay" class="overlay hidden">
+          <h2 id="overlayTitle">PAUSED</h2>
+          <p id="overlayText"></p>
+          <button id="retryBtn" class="btn">&#9654; PLAY AGAIN</button>
+          <button id="menuBtn" class="btn small">MENU</button>
+        </div>
+      </div>
+      <div class="pad" aria-label="Direction pad">
+        <button data-dir="up" class="padbtn up" aria-label="Up">&#9650;</button>
+        <button data-dir="left" class="padbtn left" aria-label="Left">&#9664;</button>
+        <button id="pauseBtn" class="padbtn mid" aria-label="Pause">II</button>
+        <button data-dir="right" class="padbtn right" aria-label="Right">&#9654;</button>
+        <button data-dir="down" class="padbtn down" aria-label="Down">&#9660;</button>
+      </div>
+    </section>
+  </div>
+  <script src="landing.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
