@@ -274,7 +274,7 @@
   // ---------- state ----------
   let snake, dir, dirQueue, grow, food, score, speed, acc, lastTime, state, eaten, popups, stepCount;
   let obstacles, power, nextPowerAt, effects, combo, bestCombo, lastEatAt, particles, trail, shakeUntil, pausedAt, pulseAt;
-  let wormholes = [], nextWormMove = 0;
+  let wormholes = [], nextWormMove = 0, powersSpawned = 0;
   let ghostLoops = [], bossUsed = false, pendingBoss = false, boss = null, trans = null;
 
   const isNeon = () => mode === "neon";
@@ -299,7 +299,8 @@
     popups = [];
     obstacles = [];
     power = null;
-    nextPowerAt = now + 8000;
+    nextPowerAt = now + 5000;
+    powersSpawned = 0;
     effects = { slow: 0, ghost: 0, double: 0 };
     combo = 0;
     bestCombo = 0;
@@ -353,7 +354,11 @@
     const head = snake[0];
     const free = freeCells().filter(c => Math.abs(c.x - head.x) + Math.abs(c.y - head.y) > 3);
     if (!free.length) return;
-    power = { ...pick(free), type: pick(["slow", "ghost", "double"]), born: now };
+    // Super Bones are the star: the first power-up is always one, then ~60% of them
+    const r = Math.random();
+    const type = powersSpawned === 0 || r < 0.6 ? "ghost" : r < 0.8 ? "slow" : "double";
+    powersSpawned++;
+    power = { ...pick(free), type, born: now };
   }
 
   function spawnObstacle() {
@@ -644,7 +649,7 @@
       burst(power.x, power.y, 20, [COLORS.w, COLORS.B, COLORS.Y]);
       sfx.power();
       power = null;
-      nextPowerAt = now + 9000 + Math.random() * 7000;
+      nextPowerAt = now + 6000 + Math.random() * 4000;
     }
 
     if (grow > 0) grow--;
@@ -658,7 +663,7 @@
     if (food && food.golden && now - food.born > GOLDEN_LIFETIME) spawnFood(now);
     if (pendingBoss) { pendingBoss = false; startTransition("out", now, () => startBoss(performance.now())); }
     if (isNeon()) {
-      if (power && now - power.born > NEON.powerLifetime) { power = null; nextPowerAt = now + 6000 + Math.random() * 6000; }
+      if (power && now - power.born > NEON.powerLifetime) { power = null; nextPowerAt = now + 3000 + Math.random() * 4000; }
       if (!power && now > nextPowerAt) spawnPower(now);
       if (level === "medium" && eaten >= 8 && wormholes.length < 2) spawnWormholePair(now);
       if (now > nextWormMove) {

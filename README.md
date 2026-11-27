@@ -17,6 +17,7 @@ A snake game where the snake is a black and tan dachshund. Every sausage it eats
   runs out. Right food calms him, wrong food or being too slow makes him angrier. Fill his hunger
   to knock him out (+1000), let his anger max out and it's game over.
   The Super Bone lasts longer the faster Otto is going.
+- Super Bones are frequent: the first power-up of a NEON game is always one, then ~60% of them
 - **FLUO** switch (button or `F` key, works in both modes): dark glowing board, fluorescent Otto with a light trail, neon UI
 - Golden sausages appear sometimes: +50 points and +3 length, but they go off after 6 seconds
 - The dog speeds up with every sausage; hi-score is saved in the browser
