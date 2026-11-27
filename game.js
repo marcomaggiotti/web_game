@@ -1343,6 +1343,82 @@
     return catCanvas;
   }
 
+  // ---------- Otto sprite for the boss arena (side view, 5px pixels) ----------
+  const OTTO_U = 5, OTTO_CW = 28, OTTO_CH = 16;
+  const OTTO_W = OTTO_CW * OTTO_U, OTTO_H = OTTO_CH * OTTO_U;
+  const OTTO_HOME = { x: 6, y: SIZE - OTTO_H - 4 };
+  const OTTO_PAW = { x: 21 * OTTO_U, y: 9 * OTTO_U };   // front paw while kicking
+  const OTTO_T = { jump: 230, kick: 130, fall: 380 };
+  const ottoCanvas = document.createElement("canvas");
+  ottoCanvas.width = OTTO_CW; ottoCanvas.height = OTTO_CH;
+  const ottoCtx = ottoCanvas.getContext("2d");
+  let otto = null;
+
+  function paintOtto(pose, now) {
+    const o = ottoCtx, P = COLORS;
+    o.clearRect(0, 0, OTTO_CW, OTTO_CH);
+    const r = (x, y, w, h, c) => { o.fillStyle = c; o.fillRect(x + 2, y + 3, w, h); };
+    const wag = Math.sin(now / (pose === "stand" ? 90 : 50)) > 0 ? 1 : 0;
+    // tail
+    r(-1, 2 - wag, 1, 3, P.K); r(0, 4, 1, 2, P.K);
+    // legs (behind the body)
+    if (pose === "stand") {
+      const step = Math.floor(now / 160) % 2;
+      for (const x of [2, 11]) { r(x, 9, 2, 1, P.K); r(x, 10, 2, 1, P.T); r(x + (step ? 0 : 1), 11, 2, 1, P.D); }
+    } else if (pose === "jump") {
+      r(-1, 8, 3, 1, P.T); r(-2, 8, 1, 1, P.D);       // back legs stretched back
+      r(13, 9, 3, 1, P.T); r(16, 9, 1, 1, P.D);       // front legs tucked
+    } else { // kick
+      r(-2, 7, 4, 1, P.T); r(-3, 6, 1, 2, P.D);        // back legs push
+      r(14, 7, 5, 2, P.T); r(19, 5, 2, 4, P.D);         // front paws strike forward
+    }
+    // long sausage body
+    r(1, 4, 14, 5, P.K);
+    r(2, 4, 12, 1, P.S);
+    r(11, 7, 3, 2, P.T);   // tan chest
+    // head (same profile sprite as the game)
+    for (let y = 0; y < HEAD_RIGHT.length; y++)
+      for (let x = 0; x < HEAD_RIGHT.length; x++) {
+        const ch = HEAD_RIGHT[y][x];
+        if (ch !== ".") r(11 + x, -2 + y, 1, 1, P[ch]);
+      }
+  }
+
+  function drawOtto(c, now) {
+    if (!otto || !boss) return;
+    let x = otto.x, y = otto.y, pose = "stand";
+    const e = now - otto.t;
+    if (otto.phase === "jump") {
+      const k = Math.min(1, e / OTTO_T.jump);
+      x = otto.from.x + (otto.to.x - otto.from.x) * k;
+      y = otto.from.y + (otto.to.y - otto.from.y) * k - Math.sin(Math.PI * k) * 60;
+      pose = "jump";
+    } else if (otto.phase === "kick") {
+      pose = "kick";
+    } else if (otto.phase === "fall") {
+      const k = Math.min(1, e / OTTO_T.fall);
+      x = otto.from.x + (OTTO_HOME.x - otto.from.x) * k;
+      y = otto.from.y + (OTTO_HOME.y - otto.from.y) * k * k - Math.sin(Math.PI * k) * 30;
+      pose = "jump";
+    } else if (boss.phase === "win") {
+      y -= Math.abs(Math.sin(now / 160)) * 30;           // happy hops
+      pose = Math.sin(now / 160) > 0.3 ? "jump" : "stand";
+    } else if (boss.phase === "play" || boss.phase === "intro") {
+      y -= Math.abs(Math.sin(now / 300)) * 3;            // ready, bouncing on his paws
+    }
+    paintOtto(pose, now);
+    c.save();
+    c.imageSmoothingEnabled = false;
+    if (otto.face < 0) {
+      c.translate(Math.round(x) + OTTO_W, Math.round(y));
+      c.scale(-1, 1);
+      c.drawImage(ottoCanvas, 0, 0, OTTO_W, OTTO_H);
+    } else {
+      c.drawImage(ottoCanvas, Math.round(x), Math.round(y), OTTO_W, OTTO_H);
+    }
+    c.restore();
+  }
+
   // ---------- boss flow ----------
   function startBoss(now) {
     boss = {
@@ -1351,6 +1427,7 @@
       mood: "angry", moodUntil: 0, shakeUntil: 0, msg: null, steamAt: 0, pausedFrom: now,
     };
     particles = [];
+    otto = { x: OTTO_HOME.x, y: OTTO_HOME.y, phase: "idle", t: now, face: 1, busy: false, food: null };
     startTransition("in", now, () => { state = "boss"; boss.start = performance.now(); }, "boss");
     tone(220, 0.25, "sawtooth", 110, 1.0, 0.1);
   }
@@ -1383,10 +1460,46 @@
   function catMood(m, now, ms) { boss.mood = m; boss.moodUntil = now + ms; }
   function catSay(text, now, color) { boss.msg = { text, t: now, color }; }
 
-  function feed(f, now) {
-    const good = boss.craving.foods.includes(f.name);
-    if (good) {
-      f.state = "eaten"; f.t = now; f.sx = f.x; f.sy = f.y;
+  // ---------- Otto, the kicker ----------
+  // tap a food: Otto leaps up, kicks it at the cat, then lands back in his corner
+  function startKick(f, now) {
+    f.good = boss.craving.foods.includes(f.name);
+    f.state = "held";
+    f.hy = f.drawY === undefined ? f.y : f.drawY;
+    const fcx = f.x + 25, fcy = f.hy + 25;
+    otto.face = fcx >= OTTO_HOME.x + OTTO_W / 2 ? 1 : -1;
+    const pawX = otto.face > 0 ? OTTO_PAW.x : OTTO_W - OTTO_PAW.x;
+    otto.from = { x: otto.x, y: otto.y };
+    otto.to = { x: fcx - pawX, y: fcy - OTTO_PAW.y };
+    otto.phase = "jump"; otto.t = now; otto.busy = true; otto.food = f;
+    tone(260, 0.12, "square", 620, 0, 0.07);
+  }
+
+  function updateOtto(now) {
+    if (!otto) return;
+    const e = now - otto.t;
+    if (otto.phase === "jump" && e >= OTTO_T.jump) {
+      otto.phase = "kick"; otto.t = now;
+      otto.x = otto.to.x; otto.y = otto.to.y;
+      const f = otto.food;
+      if (f && f.state === "held") {
+        f.state = "kicked"; f.t = now; f.kx = f.x; f.ky = f.hy;
+        f.tx = MOUTH.x - 25; f.ty = MOUTH.y - (f.good ? 25 : 75);
+      }
+      tone(150, 0.06, "square", 80, 0, 0.12); tone(900, 0.05, "square", null, 0.02, 0.05); // THWACK
+      burstAt(otto.x + (otto.face > 0 ? OTTO_PAW.x : OTTO_W - OTTO_PAW.x), otto.y + OTTO_PAW.y, 8, ["#ffffff", "#fff700"], 0.7);
+    } else if (otto.phase === "kick" && e >= OTTO_T.kick) {
+      otto.phase = "fall"; otto.t = now; otto.from = { x: otto.x, y: otto.y };
+    } else if (otto.phase === "fall" && e >= OTTO_T.fall) {
+      otto.phase = "idle"; otto.t = now; otto.x = OTTO_HOME.x; otto.y = OTTO_HOME.y; otto.busy = false; otto.face = 1;
+    }
+  }
+
+  function resolveFood(f, now) {
+    if (!boss || boss.phase !== "play") { f.state = "gone"; return; }
+    if (f.good) {
+      f.state = "gone";
+      burstAt(MOUTH.x, MOUTH.y, 12, ["#3fff7a", "#ffffff", "#fff700"], 0.6);
       boss.fed++;
       boss.anger = Math.max(0, boss.anger - 20);
       catMood("yum", now, 900);
@@ -1396,8 +1509,10 @@
       boss.craving = null;
       boss.nextCraving = now + 900;
     } else {
-      f.state = "gone";
-      burstAt(f.x + 25, f.y + 25, 14, ["#ff2a6d", "#ffffff", "#ffd84a"]);
+      // bonk! it bounces off the cat's face
+      f.state = "bounce"; f.t = now;
+      f.bx = f.tx; f.by = f.ty; f.bvx = (f.kx < MOUTH.x ? -1 : 1) * (180 + Math.random() * 80); f.bvy = -420;
+      burstAt(MOUTH.x, MOUTH.y - 50, 14, ["#ff2a6d", "#ffffff", "#ffd84a"]);
       angerUp(L().boss.wrong, now, pick(["HISSSS!", "YUCK!", "WRONG!!", "GRRRR!"]));
     }
   }
@@ -1441,6 +1556,7 @@
 
   function updateBoss(now) {
     if (!boss) return;
+    updateOtto(now);
     if (boss.phase === "intro" && now - boss.start > 1600) {
       boss.phase = "play";
       newCraving(now);
@@ -1453,7 +1569,7 @@
         spawnFlyingFood(now);
         boss.nextSpawn = now + Math.max(380, L().boss.spawn - boss.fed * 50);
       }
-      if (now - boss.reqStart > boss.reqDur) {
+      if (now - boss.reqStart > boss.reqDur && !otto.busy) { // never "too slow" mid-kick
         angerUp(L().boss.slow, now, "TOO SLOW!!");
         if (boss.phase === "play") newCraving(now);
       }
@@ -1462,17 +1578,18 @@
 
   // click / tap on flying food
   canvas.addEventListener("pointerdown", e => {
-    if (state !== "boss" || !boss || boss.phase !== "play" || !boss.craving) return;
+    if (state !== "boss" || !boss || boss.phase !== "play" || !boss.craving || otto.busy) return;
     const r = canvas.getBoundingClientRect();
     const x = (e.clientX - r.left) * SIZE / r.width, y = (e.clientY - r.top) * SIZE / r.height;
     const now = performance.now();
     let best = null, bestD = 44;
     for (const f of boss.foods) {
       if (f.state !== "fly") continue;
-      const d = Math.hypot(f.x + 25 - x, f.y + 25 - y);
+      const fy = f.drawY === undefined ? f.y : f.drawY;
+      const d = Math.hypot(f.x + 25 - x, fy + 25 - y);
       if (d < bestD) { best = f; bestD = d; }
     }
-    if (best) feed(best, now);
+    if (best) startKick(best, now);
   });
 
   // ---------- boss rendering ----------
@@ -1569,31 +1686,6 @@
       c.globalAlpha = 1;
     }
 
-    // flying foods
-    boss.foods = boss.foods.filter(f => f.state !== "gone" && f.x > -80 && f.x < SIZE + 80);
-    for (const f of boss.foods) {
-      if (f.state === "fly") {
-        f.x += f.vx * dt / 1000;
-        const y = f.y + Math.sin((now - f.born) / 260 + f.wob) * f.amp;
-        f.drawY = y;
-        drawMap(c, FOODS[f.name], f.x, y, FOOD_SIZE, FOOD_PAL);
-      } else if (f.state === "eaten") {
-        const k = Math.min(1, (now - f.t) / 350);
-        const x = f.sx + (MOUTH.x - 25 - f.sx) * k, y = (f.drawY || f.sy) + (MOUTH.y - 25 - (f.drawY || f.sy)) * k;
-        drawMap(c, FOODS[f.name], x + 25 * k, y + 25 * k, FOOD_SIZE * (1 - k * 0.8), FOOD_PAL);
-        if (k >= 1) { f.state = "gone"; burstAt(MOUTH.x, MOUTH.y, 10, ["#3fff7a", "#ffffff", "#fff700"], 0.6); }
-      }
-    }
-    // keep hit-testing in sync with the wobble
-    for (const f of boss.foods) if (f.drawY !== undefined) f.y = f.y; // (position used below)
-
-    // particles
-    particles = particles.filter(p => (p.life += dt) < p.max);
-    for (const p of particles) {
-      p.x += p.vx * dt / 1000; p.y += p.vy * dt / 1000; p.vx *= 0.94; p.vy *= 0.94;
-      c.fillStyle = p.color;
-      c.fillRect(Math.round(p.x / 3) * 3, Math.round(p.y / 3) * 3, 6, 6);
-    }
     if (fluo) bloom(out);
 
     // HUD: meters
@@ -1643,6 +1735,38 @@
     } else if (boss.phase === "win") {
       bossText(out, "GATTO KO!  +1000", SIZE / 2, 150, 22, "#fff700", "center", fluo);
     }
+
+    // top layer: foods, Otto and particles stay above the bubble and meters
+    const top = fluo ? layerCtx : out;
+    if (fluo) top.clearRect(0, 0, SIZE, SIZE);
+    top.imageSmoothingEnabled = false;
+    boss.foods = boss.foods.filter(f => f.state !== "gone" && f.x > -80 && f.x < SIZE + 80 && !(f.state === "bounce" && f.by > SIZE + 60));
+    for (const f of boss.foods) {
+      if (f.state === "fly") {
+        f.x += f.vx * dt / 1000;
+        f.drawY = f.y + Math.sin((now - f.born) / 260 + f.wob) * f.amp;
+        drawMap(top, FOODS[f.name], f.x, f.drawY, FOOD_SIZE, FOOD_PAL);
+      } else if (f.state === "held") {
+        drawMap(top, FOODS[f.name], f.x, f.hy, FOOD_SIZE, FOOD_PAL);
+      } else if (f.state === "kicked") {
+        const k = Math.min(1, (now - f.t) / 300);
+        const x = f.kx + (f.tx - f.kx) * k, y = f.ky + (f.ty - f.ky) * k - Math.sin(Math.PI * k) * 40;
+        const sz = f.good ? FOOD_SIZE * (1 - k * 0.6) : FOOD_SIZE;
+        drawMap(top, FOODS[f.name], x + (FOOD_SIZE - sz) * 5, y + (FOOD_SIZE - sz) * 5, sz, FOOD_PAL);
+        if (k >= 1) resolveFood(f, now);
+      } else if (f.state === "bounce") {
+        f.bx += f.bvx * dt / 1000; f.by += f.bvy * dt / 1000; f.bvy += 1400 * dt / 1000;
+        drawMap(top, FOODS[f.name], f.bx, f.by, FOOD_SIZE, FOOD_PAL, 0.85);
+      }
+    }
+    drawOtto(top, now);
+    particles = particles.filter(p => (p.life += dt) < p.max);
+    for (const p of particles) {
+      p.x += p.vx * dt / 1000; p.y += p.vy * dt / 1000; p.vx *= 0.94; p.vy *= 0.94;
+      top.fillStyle = p.color;
+      top.fillRect(Math.round(p.x / 3) * 3, Math.round(p.y / 3) * 3, 6, 6);
+    }
+    if (fluo) bloom(out);
     out.restore();
   }
 
