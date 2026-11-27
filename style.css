@@ -196,9 +196,19 @@ canvas {
 .fluoBtn { box-shadow: 0 0 0 4px #000, inset 0 0 0 3px #4a3a50; }
 .fluoBtn[aria-pressed="true"] { background: #ff3df2; color: #0b0618; box-shadow: 0 0 0 4px #000, 0 0 18px #ff3df2; }
 .opt.small { font-size: 10px; padding: 8px 10px; }
-.modeDesc { font-size: 9px; line-height: 1.9; text-align: center; color: var(--text); margin: 2px 0 0; min-height: 3.8em; }
-.hud2 { margin-top: -4px; align-items: center; }
-.hudMode { color: var(--accent); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* fixed heights: changing text must never push the layout around */
+.modeDesc { font-size: 9px; line-height: 1.9; text-align: center; color: var(--text); margin: 2px 0 0; height: 5.7em; overflow: hidden; }
+.hud2 { margin-top: -4px; align-items: center; height: 34px; }
+.hudMode {
+  flex: 1;
+  min-width: 0;
+  color: var(--accent);
+  line-height: 1.6;
+  max-height: 3.2em;   /* two lines at most */
+  overflow: hidden;
+  word-spacing: -2px;
+}
+.hud2 .fluoBtn { flex: none; }
 
 /* ---------- FLUO theme ---------- */
 body.fluo {

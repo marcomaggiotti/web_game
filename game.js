@@ -193,6 +193,7 @@
     ],
   };
   const POWER_NAMES = { slow: "SLOW-MO", ghost: "SUPER BONE", double: "x2 POINTS" };
+  const POWER_SHORT = { slow: "SLOW", ghost: "BONE", double: "x2" };
 
   const DIRS = {
     up: { x: 0, y: -1 },
@@ -397,12 +398,15 @@
     $("hiLanding").textContent = hi;
     $("hiWhich").textContent = `${mode.toUpperCase()} ${level.toUpperCase()}`;
     let txt = (isNeon() ? "NEON " : "CLASSIC ") + level.toUpperCase();
-    if (boss && (state === "boss" || state === "transition")) txt = "BOSS FIGHT!  GATTO CICCIONE";
-    else if (isNeon() && snake) {
-      if (combo > 1 && now - lastEatAt < L().comboWindow) txt += `  COMBO x${combo}`;
-      for (const name of ["slow", "ghost", "double"])
-        if (effectOn(name, now)) txt += `  ${POWER_NAMES[name]} ${Math.ceil((effects[name] - now) / 1000)}`;
-      if (effectOn("ghost", now) && !bossUsed) txt += "  DRAW AN 8!";
+    if (boss && (state === "boss" || state === "transition")) txt = "BOSS FIGHT! · GATTO CICCIONE";
+    else if (isNeon() && snake && effects) {
+      // most important first; the mode label gives way while anything is active
+      const parts = [];
+      if (effectOn("ghost", now) && !bossUsed) parts.push("DRAW AN 8!");
+      for (const name of ["ghost", "slow", "double"])
+        if (effectOn(name, now)) parts.push(`${POWER_SHORT[name]} ${Math.ceil((effects[name] - now) / 1000)}`);
+      if (combo > 1 && now - lastEatAt < L().comboWindow) parts.push(`COMBO x${combo}`);
+      if (parts.length) txt = parts.join(" · ");
     }
     if (txt !== lastHud2) { $("hudMode").textContent = txt; lastHud2 = txt; }
   }
