@@ -7,22 +7,38 @@
   const PX = 3;               // canvas px per sprite pixel (10x10 sprites)
   const SP = CELL / PX;       // sprite pixels per cell (10)
   const SIZE = GRID * CELL;
-  const MIN_SPEED = 60;
-  const SPEED_STEP = 5;
+  // difficulty levels (both modes + the cat boss)
+  const LEVELS = {
+    easy: {
+      classicStart: 180, neonStart: 165, step: 3, minSpeed: 85,
+      obstacleEvery: 6, comboWindow: 4500,
+      boss: { need: 4, anger: 20, reqBase: 8500, reqMin: 5500, wrong: 15, slow: 12, spawn: 850 },
+    },
+    medium: {
+      classicStart: 150, neonStart: 135, step: 5, minSpeed: 60,
+      obstacleEvery: 4, comboWindow: 3500,
+      boss: { need: 5, anger: 35, reqBase: 6500, reqMin: 3500, wrong: 25, slow: 20, spawn: 720 },
+    },
+    hard: {
+      classicStart: 115, neonStart: 105, step: 6, minSpeed: 48,
+      obstacleEvery: 3, comboWindow: 2500,
+      boss: { need: 7, anger: 45, reqBase: 5000, reqMin: 2800, wrong: 30, slow: 25, spawn: 560 },
+    },
+  };
+  let level = "medium";
+  const L = () => LEVELS[level];
+  const startSpeed = () => (mode === "neon" ? L().neonStart : L().classicStart);
   const GOLDEN_CHANCE = 0.18;
   const GOLDEN_LIFETIME = 6000;
 
-  // NEON mode tuning
+  // NEON mode tuning (speed, combo window and obstacle rate come from LEVELS)
   const NEON = {
-    startSpeed: 135,
-    comboWindow: 3500,     // ms between sausages to keep the combo going
     maxCombo: 5,
-    obstacleEvery: 4,      // sausages
     maxObstacles: 14,
     powerLifetime: 7000,
-    powerDuration: { slow: 6000, ghost: 6000, double: 8000 },
+    powerDuration: { slow: 6000, ghost: 9000, double: 8000 },
   };
-  const CLASSIC_START_SPEED = 150;
+
 
   // ---------- palettes ----------
   const CLASSIC_COLORS = {
@@ -216,12 +232,12 @@
     get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) { /* ignore */ } },
   };
-  const HI_KEYS = { classic: "wienerSnakeHi", neon: "ottoNeonHi" };
-  const hiScores = {
-    classic: parseInt(store.get(HI_KEYS.classic, "0"), 10) || 0,
-    neon: parseInt(store.get(HI_KEYS.neon, "0"), 10) || 0,
-  };
+  // one hi-score per mode + level (classic/medium keeps the original key)
+  const hiKey = (m, l) => (m === "classic" && l === "medium") ? "wienerSnakeHi"
+    : (m === "neon" && l === "medium") ? "ottoNeonHi" : `ottoHi_${m}_${l}`;
+  const getHi = (m = mode, l = level) => parseInt(store.get(hiKey(m, l), "0"), 10) || 0;
   let mode = store.get("ottoMode", "classic") === "neon" ? "neon" : "classic";
+  level = LEVELS[store.get("ottoLevel", "medium")] ? store.get("ottoLevel", "medium") : "medium";
   let fluo = store.get("ottoFluo", "0") === "1";
 
   // ---------- audio ----------
@@ -252,11 +268,14 @@
     start: () => [262, 330, 392, 523].forEach((f, i) => tone(f, 0.07, "square", null, i * 0.07)),
     power: () => [660, 880, 1320].forEach((f, i) => tone(f, 0.1, "triangle", f * 1.5, i * 0.06, 0.1)),
     block: () => tone(140, 0.12, "square", 90, 0, 0.06),
+    warp: () => { tone(1200, 0.18, "sine", 200, 0, 0.09); tone(300, 0.2, "triangle", 1400, 0.08, 0.07); },
   };
 
   // ---------- state ----------
   let snake, dir, dirQueue, grow, food, score, speed, acc, lastTime, state, eaten, popups, stepCount;
   let obstacles, power, nextPowerAt, effects, combo, bestCombo, lastEatAt, particles, trail, shakeUntil, pausedAt, pulseAt;
+  let wormholes = [], nextWormMove = 0;
+  let ghostLoops = [], bossUsed = false, pendingBoss = false, boss = null, trans = null;
 
   const isNeon = () => mode === "neon";
   const effectOn = (name, now) => effects[name] > now;
@@ -274,7 +293,7 @@
     grow = 0;
     score = 0;
     eaten = 0;
-    speed = isNeon() ? NEON.startSpeed : CLASSIC_START_SPEED;
+    speed = startSpeed();
     acc = 0;
     stepCount = 0;
     popups = [];
@@ -289,6 +308,16 @@
     trail = [];
     shakeUntil = 0;
     pulseAt = -Infinity;
+    ghostLoops = [];
+    bossUsed = false;
+    pendingBoss = false;
+    wormholes = [];
+    if (isNeon()) {
+      for (let i = 0; i < (level === "hard" ? 2 : 1); i++) spawnWormholePair(now);
+      nextWormMove = now + 22000;
+    }
+    boss = null;
+    trans = null;
     food = null;
     spawnFood(now);
     updateHud(now);
@@ -299,6 +328,7 @@
   function freeCells(extraBlocked = []) {
     const occupied = new Set(snake.map(s => key(s.x, s.y)));
     obstacles.forEach(o => occupied.add(key(o.x, o.y)));
+    wormholes.forEach(w => { occupied.add(key(w.a.x, w.a.y)); occupied.add(key(w.b.x, w.b.y)); });
     if (food) occupied.add(key(food.x, food.y));
     if (power) occupied.add(key(power.x, power.y));
     extraBlocked.forEach(c => occupied.add(key(c.x, c.y)));
@@ -357,14 +387,17 @@
   function updateHud(now = performance.now()) {
     $("score").textContent = score;
     $("length").textContent = snake ? snake.length : 0;
-    $("hi").textContent = hiScores[mode];
-    $("hiClassic").textContent = hiScores.classic;
-    $("hiNeon").textContent = hiScores.neon;
-    let txt = isNeon() ? "NEON" : "CLASSIC";
-    if (isNeon() && snake) {
-      if (combo > 1 && now - lastEatAt < NEON.comboWindow) txt += `  COMBO x${combo}`;
+    const hi = getHi();
+    $("hi").textContent = hi;
+    $("hiLanding").textContent = hi;
+    $("hiWhich").textContent = `${mode.toUpperCase()} ${level.toUpperCase()}`;
+    let txt = (isNeon() ? "NEON " : "CLASSIC ") + level.toUpperCase();
+    if (boss && (state === "boss" || state === "transition")) txt = "BOSS FIGHT!  GATTO CICCIONE";
+    else if (isNeon() && snake) {
+      if (combo > 1 && now - lastEatAt < L().comboWindow) txt += `  COMBO x${combo}`;
       for (const name of ["slow", "ghost", "double"])
         if (effectOn(name, now)) txt += `  ${POWER_NAMES[name]} ${Math.ceil((effects[name] - now) / 1000)}`;
+      if (effectOn("ghost", now) && !bossUsed) txt += "  DRAW AN 8!";
     }
     if (txt !== lastHud2) { $("hudMode").textContent = txt; lastHud2 = txt; }
   }
@@ -375,16 +408,19 @@
     document.body.classList.toggle("fluo", fluo);
     document.documentElement.classList.toggle("fluo", fluo);
     document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    document.querySelectorAll("[data-level]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.level === level)));
     document.querySelectorAll(".fluoBtn").forEach(b => {
       b.setAttribute("aria-pressed", String(fluo));
       b.querySelector(".state").textContent = fluo ? "ON" : "OFF";
     });
     $("modeDesc").innerHTML = isNeon()
-      ? "WALLS WRAP AROUND &middot; COMBOS<br>POWER-UPS &middot; OBSTACLES"
+      ? "WALLS WRAP &middot; WORMHOLES &middot; COMBOS<br>POWER-UPS &middot; OBSTACLES<br>SUPER BONE + DRAW AN 8 = ???"
       : "THE ORIGINAL. DON'T HIT THE WALLS<br>OR YOUR OWN LONG BODY";
     updateHud();
   }
   function setMode(m) { mode = m; store.set("ottoMode", m); applySettings(); }
+  function setLevel(l) { level = l; store.set("ottoLevel", l); applySettings(); }
+  document.querySelectorAll("[data-level]").forEach(b => b.addEventListener("click", () => setLevel(b.dataset.level)));
   function toggleFluo() { fluo = !fluo; store.set("ottoFluo", fluo ? "1" : "0"); applySettings(); }
 
   document.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
@@ -489,12 +525,7 @@
       overlay.classList.remove("hidden");
     } else if (state === "paused") {
       // freeze every timer while paused
-      const dt = now - pausedAt;
-      if (food) food.born += dt;
-      if (power) power.born += dt;
-      nextPowerAt += dt;
-      lastEatAt += dt;
-      for (const k in effects) if (effects[k]) effects[k] += dt;
+      shiftTimers(now - pausedAt);
       state = "playing";
       overlay.classList.add("hidden");
       lastTime = now;
@@ -508,13 +539,13 @@
       shakeUntil = now + 450;
       snake.forEach((s, i) => { if (i % 2 === 0) burst(s.x, s.y, 4, [COLORS.K, COLORS.T, COLORS.S]); });
     }
-    const newHi = score > hiScores[mode];
-    if (newHi) { hiScores[mode] = score; store.set(HI_KEYS[mode], score); }
+    const newHi = score > getHi();
+    if (newHi) store.set(hiKey(mode, level), score);
     updateHud(now);
-    overlayTitle.textContent = "GAME OVER";
+    overlayTitle.textContent = boss && boss.phase === "lose" ? "THE CAT WON!" : "GAME OVER";
     overlayTitle.style.color = "var(--danger)";
     overlayText.innerHTML =
-      `SAUSAGES EATEN: ${eaten}<br>LENGTH: ${snake.length}<br>SCORE: ${score}` +
+      `${mode.toUpperCase()} &middot; ${level.toUpperCase()}<br>SAUSAGES EATEN: ${eaten}<br>LENGTH: ${snake.length}<br>SCORE: ${score}` +
       (isNeon() ? `<br>BEST COMBO: x${bestCombo}` : "") +
       (newHi ? `<br><span style="color:var(--accent)">NEW HI-SCORE!</span>` : "");
     retryBtn.innerHTML = "&#9654; PLAY AGAIN";
@@ -523,11 +554,12 @@
   }
 
   // ---------- particles ----------
-  function burst(cx, cy, n, colors) {
+  function burst(cx, cy, n, colors) { burstAt(cx * CELL + CELL / 2, cy * CELL + CELL / 2, n, colors); }
+  function burstAt(x, y, n, colors, speed = 1) {
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2, v = 60 + Math.random() * 160;
+      const a = Math.random() * Math.PI * 2, v = (60 + Math.random() * 160) * speed;
       particles.push({
-        x: cx * CELL + CELL / 2, y: cy * CELL + CELL / 2,
+        x, y,
         vx: Math.cos(a) * v, vy: Math.sin(a) * v,
         life: 0, max: 350 + Math.random() * 350, color: pick(colors),
       });
@@ -547,19 +579,39 @@
       head.y = (head.y + GRID) % GRID;
     }
 
+    // wormholes: step in one, pop out of its twin heading the same way
+    for (const w of wormholes) {
+      const exit = (head.x === w.a.x && head.y === w.a.y) ? w.b : (head.x === w.b.x && head.y === w.b.y) ? w.a : null;
+      if (exit) {
+        burst(head.x, head.y, 10, [w.color, "#ffffff"]);
+        head.x = exit.x; head.y = exit.y;
+        burst(head.x, head.y, 14, [w.color, "#ffffff"]);
+        w.usedAt = now;
+        sfx.warp();
+        break;
+      }
+    }
+
     if (!ghost && obstacles.some(o => o.x === head.x && o.y === head.y)) return gameOver(now);
 
     const willEat = food && head.x === food.x && head.y === food.y;
     const tailMoves = grow === 0 && !willEat;
     const body = tailMoves ? snake.slice(0, -1) : snake;
     if (!ghost && body.some(s => s.x === head.x && s.y === head.y)) return gameOver(now);
+    if (ghost && isNeon() && !bossUsed) {
+      const idx = snake.findIndex(s => s.x === head.x && s.y === head.y);
+      if (idx >= 6) {
+        const o = loopOrientation([head, ...snake.slice(0, idx + 1)]);
+        if (o) handleLoop(o, head, now);
+      }
+    }
 
     snake.unshift(head);
     if (willEat) {
       let pts = food.golden ? 50 : 10;
       let label = "+";
       if (isNeon()) {
-        combo = now - lastEatAt < NEON.comboWindow ? Math.min(NEON.maxCombo, combo + 1) : 1;
+        combo = now - lastEatAt < L().comboWindow ? Math.min(NEON.maxCombo, combo + 1) : 1;
         bestCombo = Math.max(bestCombo, combo);
         lastEatAt = now;
         pts *= combo * (effectOn("double", now) ? 2 : 1);
@@ -573,8 +625,8 @@
       popups.push({ x: food.x, y: food.y, text: label, t: now, golden: food.golden });
       food.golden ? sfx.golden() : sfx.eat(isNeon() ? combo : 1);
       if (eaten % 5 === 0) sfx.bark();
-      speed = Math.max(MIN_SPEED, (isNeon() ? NEON.startSpeed : CLASSIC_START_SPEED) - eaten * SPEED_STEP);
-      if (isNeon() && eaten % NEON.obstacleEvery === 0 && obstacles.length < NEON.maxObstacles) {
+      speed = Math.max(L().minSpeed, startSpeed() - eaten * L().step);
+      if (isNeon() && eaten % L().obstacleEvery === 0 && obstacles.length < NEON.maxObstacles) {
         spawnObstacle();
         sfx.block();
       }
@@ -582,7 +634,12 @@
     }
 
     if (isNeon() && power && head.x === power.x && head.y === power.y) {
-      effects[power.type] = now + NEON.powerDuration[power.type];
+      // Super Bone lasts longer the faster Otto runs (same number of moves to draw an 8)
+      const dur = power.type === "ghost"
+        ? Math.round(NEON.powerDuration.ghost * startSpeed() / speed)
+        : NEON.powerDuration[power.type];
+      effects[power.type] = now + dur;
+      if (power.type === "ghost") { ghostLoops = []; bossUsed = false; }
       popups.push({ x: power.x, y: power.y, text: POWER_NAMES[power.type], t: now, golden: true });
       burst(power.x, power.y, 20, [COLORS.w, COLORS.B, COLORS.Y]);
       sfx.power();
@@ -599,15 +656,24 @@
 
     // golden sausages spoil, power-ups come and go
     if (food && food.golden && now - food.born > GOLDEN_LIFETIME) spawnFood(now);
+    if (pendingBoss) { pendingBoss = false; startTransition("out", now, () => startBoss(performance.now())); }
     if (isNeon()) {
       if (power && now - power.born > NEON.powerLifetime) { power = null; nextPowerAt = now + 6000 + Math.random() * 6000; }
       if (!power && now > nextPowerAt) spawnPower(now);
+      if (level === "medium" && eaten >= 8 && wormholes.length < 2) spawnWormholePair(now);
+      if (now > nextWormMove) {
+        // move a wormhole pair that nobody is passing through
+        const busy = w => snake.some(s => (s.x === w.a.x && s.y === w.a.y) || (s.x === w.b.x && s.y === w.b.y));
+        const idle = wormholes.filter(w => !busy(w));
+        if (idle.length) { const w = pick(idle); wormholes.splice(wormholes.indexOf(w), 1); spawnWormholePair(now, w.color); }
+        nextWormMove = now + 20000 + Math.random() * 8000;
+      }
     }
     updateHud(now);
   }
 
   // ---------- rendering ----------
-  function drawSprite(map, cx, cy, offX = 0, offY = 0, size = PX) {
+  function drawSprite(map, cx, cy, offX = 0, offY = 0, size = PX, pal = COLORS) {
     const n = map.length;
     const pad = (n * size - CELL) / 2; // larger sprites stay centred on the cell
     for (let r = 0; r < n; r++) {
@@ -615,7 +681,7 @@
       for (let c = 0; c < n; c++) {
         const ch = row[c];
         if (ch === ".") continue;
-        ctx.fillStyle = COLORS[ch];
+        ctx.fillStyle = pal[ch];
         ctx.fillRect(cx * CELL + c * size + offX - pad, cy * CELL + r * size + offY - pad, size, size);
       }
     }
@@ -630,8 +696,9 @@
   function neighbourDir(a, b) {
     if (!b) return null;
     let dx = b.x - a.x, dy = b.y - a.y;
-    if (dx > 1) dx = -1; else if (dx < -1) dx = 1;   // neighbours across a wrapped edge
-    if (dy > 1) dy = -1; else if (dy < -1) dy = 1;
+    if (Math.abs(dx) === GRID - 1) dx = -Math.sign(dx);   // neighbours across a wrapped edge
+    if (Math.abs(dy) === GRID - 1) dy = -Math.sign(dy);
+    if (Math.abs(dx) + Math.abs(dy) !== 1) return null;   // not touching (e.g. split by a wormhole)
     if (dx > 0) return "right";
     if (dx < 0) return "left";
     if (dy > 0) return "down";
@@ -667,6 +734,7 @@
   }
 
   function legs(seg, towardHead, phase, front) {
+    if (!towardHead) return;
     const shift = phase ? 1 : -1;
     if (towardHead === "left" || towardHead === "right") {
       // side view: two short stubby legs under the belly, stepping in turn
@@ -746,6 +814,50 @@
     }
   }
 
+  // ---------- wormholes (NEON) ----------
+  const WORM_COLORS = ["#13e8ff", "#ff9f1a", "#ff3df2"];
+  function spawnWormholePair(now, color) {
+    const head = snake[0];
+    const d = DIRS[dir];
+    const ahead = [];
+    for (let i = 1; i <= 4; i++) ahead.push({ x: (head.x + d.x * i + GRID) % GRID, y: (head.y + d.y * i + GRID) % GRID });
+    const free = freeCells(ahead).filter(c => Math.abs(c.x - head.x) + Math.abs(c.y - head.y) > 3);
+    for (let tries = 0; tries < 80 && free.length > 1; tries++) {
+      const a = pick(free), b = pick(free);
+      if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 8) continue;
+      const used = wormholes.map(w => w.color);
+      wormholes.push({ a, b, color: color || WORM_COLORS.find(c => !used.includes(c)) || WORM_COLORS[0], born: now, usedAt: -Infinity });
+      return;
+    }
+  }
+
+  function drawWormholes(now) {
+    for (const w of wormholes) {
+      const open = Math.min(1, (now - w.born) / 400);
+      const flash = Math.max(0, 1 - (now - w.usedAt) / 300);
+      for (const [i, c] of [w.a, w.b].entries()) {
+        const cx = c.x * CELL + CELL / 2, cy = c.y * CELL + CELL / 2;
+        // dark core
+        ctx.fillStyle = fluo ? "#000" : "#1a0a2a";
+        ctx.fillRect(cx - 12 * open, cy - 12 * open, 24 * open, 24 * open);
+        // spinning pixel ring (the two ends spin opposite ways)
+        const spin = now / 180 * (i ? -1 : 1);
+        for (let k = 0; k < 10; k++) {
+          const a = spin + (k / 10) * Math.PI * 2;
+          const r = (10 + 3 * Math.sin(now / 200 + k)) * open + flash * 6;
+          ctx.fillStyle = k % 2 ? w.color : "#ffffff";
+          ctx.fillRect(Math.round((cx + Math.cos(a) * r) / 3) * 3 - 3, Math.round((cy + Math.sin(a) * r) / 3) * 3 - 3, 6, 6);
+        }
+        // inner spiral dots
+        for (let k = 0; k < 4; k++) {
+          const a = -spin * 1.6 + k * Math.PI / 2;
+          ctx.fillStyle = w.color;
+          ctx.fillRect(Math.round(cx + Math.cos(a) * 5 * open) - 2, Math.round(cy + Math.sin(a) * 5 * open) - 2, 3, 3);
+        }
+      }
+    }
+  }
+
   function drawTrail(now) {
     if (!fluo) return;
     trail = trail.filter(t => now - t.t < 320);
@@ -780,7 +892,7 @@
 
     // tail: a thin whip that tapers and wags upward, like a dachshund's
     const tail = snake[n - 1];
-    const toBody = neighbourDir(tail, snake[n - 2]);
+    const toBody = neighbourDir(tail, snake[n - 2]) || OPPOSITE[dir];
     const wag = Math.sin(now / 90) > 0 ? 1 : 0;
     const tip = OPPOSITE[toBody];
     if (tip === "left" || tip === "right") {
@@ -855,7 +967,8 @@
     popups = popups.filter(p => now - p.t < 800);
     for (const p of popups) {
       const k = (now - p.t) / 800;
-      const x = Math.min(SIZE - 60, Math.max(60, p.x * CELL + CELL / 2)), y = Math.max(16, p.y * CELL - k * 30);
+      const half = Math.min(SIZE / 2 - 8, p.text.length * 6 + 8);
+      const x = Math.min(SIZE - half, Math.max(half, p.x * CELL + CELL / 2)), y = Math.max(16, p.y * CELL - k * 30);
       ctx.fillStyle = fluo ? "#0b0618" : "#000";
       ctx.fillText(p.text, x + 2, y + 2);
       ctx.fillStyle = p.golden ? COLORS.G : (fluo ? "#ffffff" : "#f4e9d8");
@@ -863,51 +976,669 @@
     }
   }
 
+  // cheap bloom: downscale (= blur) the sprite layer and add it back on top
+  function bloom(out) {
+    glowACtx.clearRect(0, 0, glowA.width, glowA.height);
+    glowACtx.drawImage(layer, 0, 0, glowA.width, glowA.height);
+    glowBCtx.clearRect(0, 0, glowB.width, glowB.height);
+    glowBCtx.drawImage(layer, 0, 0, glowB.width, glowB.height);
+    out.imageSmoothingEnabled = true;
+    out.globalCompositeOperation = "lighter";
+    out.globalAlpha = 0.9;
+    out.drawImage(glowB, 0, 0, SIZE, SIZE);
+    out.globalAlpha = 0.8;
+    out.drawImage(glowA, 0, 0, SIZE, SIZE);
+    out.globalAlpha = 1;
+    out.globalCompositeOperation = "source-over";
+    out.imageSmoothingEnabled = false;
+    out.drawImage(layer, 0, 0);
+  }
+
   let lastRender = 0;
-  function render(now) {
+  function frameDt(now) {
     const dt = Math.min(50, now - (lastRender || now));
     lastRender = now;
+    return dt;
+  }
 
-    mainCtx.save();
+  function render(now, out = mainCtx, dt = frameDt(now)) {
+    out.save();
     if (now < shakeUntil) {
       const k = (shakeUntil - now) / 450;
-      mainCtx.translate(Math.round((Math.random() - 0.5) * 16 * k), Math.round((Math.random() - 0.5) * 16 * k));
+      out.translate(Math.round((Math.random() - 0.5) * 16 * k), Math.round((Math.random() - 0.5) * 16 * k));
     }
 
-    ctx = mainCtx;
+    ctx = out;
     drawBoard(now);
 
     // sprites go to a layer, so FLUO can bloom them in one pass
-    ctx = fluo ? layerCtx : mainCtx;
+    ctx = fluo ? layerCtx : out;
     if (fluo) ctx.clearRect(0, 0, SIZE, SIZE);
     drawTrail(now);
+    drawWormholes(now);
     drawObstacles(now);
     drawFood(now);
     drawPower(now);
     drawDog(now);
     drawParticles(now, dt);
 
-    if (fluo) {
-      // cheap bloom: downscale (= blur) the sprite layer and add it back on top
-      glowACtx.clearRect(0, 0, glowA.width, glowA.height);
-      glowACtx.drawImage(layer, 0, 0, glowA.width, glowA.height);
-      glowBCtx.clearRect(0, 0, glowB.width, glowB.height);
-      glowBCtx.drawImage(layer, 0, 0, glowB.width, glowB.height);
-      mainCtx.imageSmoothingEnabled = true;
-      mainCtx.globalCompositeOperation = "lighter";
-      mainCtx.globalAlpha = 0.9;
-      mainCtx.drawImage(glowB, 0, 0, SIZE, SIZE);
-      mainCtx.globalAlpha = 0.8;
-      mainCtx.drawImage(glowA, 0, 0, SIZE, SIZE);
-      mainCtx.globalAlpha = 1;
-      mainCtx.globalCompositeOperation = "source-over";
-      mainCtx.imageSmoothingEnabled = false;
-      mainCtx.drawImage(layer, 0, 0);
+    if (fluo) bloom(out);
+
+    ctx = out;
+    drawPopups(now);
+    out.restore();
+    ctx = mainCtx;
+  }
+
+  // =====================================================================
+  //  BOSS: GATTO CICCIONE  (NEON mode, Super Bone + figure 8)
+  // =====================================================================
+
+  // ---------- figure-8 detection ----------
+  // path: cells from the head back along the body to where the head re-enters it.
+  // Returns +1 / -1 for the loop's turning direction, 0 if it isn't a plain loop.
+  function loopOrientation(path) {
+    let ux = 0, uy = 0, area = 0;
+    for (let j = 1; j < path.length; j++) {
+      const nd = neighbourDir(path[j - 1], path[j]);
+      if (!nd) return 0; // the loop went through a wormhole
+      const dx = DIRS[nd].x, dy = DIRS[nd].y;
+      const nx = ux + dx, ny = uy + dy;
+      area += ux * ny - nx * uy;
+      ux = nx; uy = ny;
+    }
+    if (ux !== 0 || uy !== 0) return 0; // went around the wrapped board
+    return Math.abs(area) >= 8 ? Math.sign(area) : 0;
+  }
+
+  function handleLoop(o, at, now) {
+    const last = ghostLoops[ghostLoops.length - 1];
+    if (last && last.o === -o && now - last.t < 20000) {
+      bossUsed = true;
+      pendingBoss = true;
+      popups.push({ x: at.x, y: at.y, text: "8 !!!", t: now, golden: true });
+      return;
+    }
+    ghostLoops = [{ o, t: now }];
+    popups.push({ x: at.x, y: at.y, text: "LOOP! NOW THE OTHER WAY", t: now, golden: true });
+    tone(880, 0.08, "triangle"); tone(1175, 0.1, "triangle", null, 0.08);
+  }
+
+  function shiftTimers(dt) {
+    if (food) food.born += dt;
+    if (power) power.born += dt;
+    nextPowerAt += dt;
+    nextWormMove += dt;
+    lastEatAt += dt;
+    for (const k in effects) if (effects[k]) effects[k] += dt;
+  }
+
+  // ---------- Scooby-style wavy transition ----------
+  const scene = document.createElement("canvas");
+  scene.width = scene.height = SIZE;
+  const sceneCtx = scene.getContext("2d");
+  sceneCtx.imageSmoothingEnabled = false;
+  const TRANS_MS = { out: 1400, in: 1200 };
+
+  function wobbleSound(up) {
+    if (!audio) return;
+    const t0 = audio.currentTime;
+    const osc = audio.createOscillator(), lfo = audio.createOscillator();
+    const lfoGain = audio.createGain(), gain = audio.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(up ? 260 : 700, t0);
+    osc.frequency.exponentialRampToValueAtTime(up ? 700 : 260, t0 + 1.1);
+    lfo.frequency.value = 9;
+    lfoGain.gain.value = 45;
+    lfo.connect(lfoGain).connect(osc.frequency);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.15);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.2);
+    osc.connect(gain).connect(audio.destination);
+    osc.start(t0); lfo.start(t0);
+    osc.stop(t0 + 1.25); lfo.stop(t0 + 1.25);
+  }
+
+  // dir "out": current scene wobbles away into the dark; then onDone() sets up the next scene
+  // dir "in": the next scene wobbles in out of the dark
+  function startTransition(dir, now, onDone, sceneName) {
+    trans = { dir, start: now, onDone, scene: sceneName || (state === "boss" ? "boss" : "game") };
+    state = "transition";
+    wobbleSound(dir === "out");
+    updateHud(now);
+  }
+
+  function renderTransition(now) {
+    const dt = frameDt(now);
+    const t = Math.min(1, (now - trans.start) / TRANS_MS[trans.dir]);
+    const k = trans.dir === "out" ? t : 1 - t;                 // wobble strength
+    const dark = trans.dir === "out" ? Math.max(0, (t - 0.45) / 0.55) : Math.max(0, 1 - t / 0.6);
+
+    sceneCtx.clearRect(0, 0, SIZE, SIZE);
+    if (trans.scene === "boss") renderBoss(now, sceneCtx, dt); else render(now, sceneCtx, dt);
+
+    const out = mainCtx;
+    out.fillStyle = "#000";
+    out.fillRect(0, 0, SIZE, SIZE);
+    // wavy ripple: every band slides sideways on a sine wave
+    for (let y = 0; y < SIZE; y += 6) {
+      const off = Math.sin(y * 0.04 + now * 0.012) * 90 * k * k + Math.sin(y * 0.11 - now * 0.02) * 20 * k;
+      out.drawImage(scene, 0, y, SIZE, 6, off, y, SIZE, 6);
+    }
+    // spinning spiral
+    out.save();
+    out.translate(SIZE / 2, SIZE / 2);
+    out.rotate(now * 0.005 + k * 8);
+    out.globalAlpha = 0.55 * Math.sin(Math.PI * Math.min(1, k * 1.2));
+    const cols = fluo ? ["#ff3df2", "#13e8ff"] : ["#e28c46", "#c99a98"];
+    for (let i = 0; i < 16; i++) {
+      out.fillStyle = cols[i % 2];
+      out.beginPath();
+      out.moveTo(0, 0);
+      for (let r = 0; r <= 900; r += 60) {
+        const a = (i / 16) * Math.PI * 2 + r * 0.006 * (1 + k);
+        out.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      for (let r = 900; r >= 0; r -= 60) {
+        const a = ((i + 0.5) / 16) * Math.PI * 2 + r * 0.006 * (1 + k);
+        out.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      out.fill();
+    }
+    out.restore();
+    // shade to dark (radial iris)
+    if (dark > 0) {
+      const g = out.createRadialGradient(SIZE / 2, SIZE / 2, 0, SIZE / 2, SIZE / 2, SIZE * 0.75);
+      g.addColorStop(0, `rgba(0,0,0,${Math.min(1, dark * 1.1)})`);
+      g.addColorStop(Math.max(0.01, 1 - dark), `rgba(0,0,0,${Math.min(1, dark * 1.4)})`);
+      g.addColorStop(1, "rgba(0,0,0,1)");
+      out.fillStyle = g;
+      out.globalAlpha = Math.min(1, dark * 1.3);
+      out.fillRect(0, 0, SIZE, SIZE);
+      out.globalAlpha = 1;
     }
 
-    ctx = mainCtx;
-    drawPopups(now);
-    mainCtx.restore();
+    if (t >= 1) {
+      const done = trans.onDone;
+      trans = null;
+      done(now);
+    }
+  }
+
+  // ---------- foods ----------
+  const FOOD_PAL = {
+    p: "#ff6fae", w: "#ffffff", y: "#ffd84a", b: "#c98a4a", o: "#a8692e",
+    f: "#4fb3ff", F: "#2a76c4", k: "#10101a", S: "#c8cdd8", B: "#2f6fe0",
+    Y: "#ffc21a", h: "#d99a00", r: "#e8402a", m: "#8a4a1e", M: "#c9773a",
+    R: "#c0452a", H: "#f08a60", X: "#7a2414", s: "#eadcb0",
+    a: "#ff8a1e", A: "#c25a00", g: "#3fc24a", G: "#1f8a2a", l: "#8fe07a",
+  };
+  const FOODS = {
+    donut: ["..........", "...pppp...", ".ppwppypp.", ".pyp..ppp.", "pppb..bpwp", "pwpb..bppp", ".ppbbbbpy.", ".bbbbbbbb.", "...bbbb...", ".........."],
+    icecream: ["...wwww...", "..wwwpww..", "..pppppp..", ".pppppppp.", ".pyppwppp.", "..bbbbbb..", "..bobobb..", "...bbbb...", "...bobb...", "....bb...."],
+    fish: ["..........", "..........", "...fff...f", ".fffffffff", "fwkfffffFf", "fffffffFff", ".ffffffffF", "...fff...f", "..........", ".........."],
+    tuna: ["..........", "..........", ".SSSSSSSS.", "SSSSSSSSSS", "SBBBBBBBBS", "SBwBBBwBBS", "SBBBBBBBBS", "SSSSSSSSSS", ".SSSSSSSS.", ".........."],
+    cheese: ["..........", "......yy..", "....yyyyy.", "..yyyyyyyy", "yyyyyyyyyy", "YYYhYYYYYY", "YhYYYYhYYY", "YYYYYYYYhY", "YYYYYYYYYY", ".........."],
+    pizza: ["bbbbbbbbbb", ".yyyyyyyy.", ".yrryyyry.", "..yrryyy..", "..yyyyry..", "...yyry...", "...yyyy...", "....yy....", "....y.....", ".........."],
+    drumstick: ["..........", "...mmmm...", "..mMMMmm..", ".mMMMMMmm.", ".mMMMMMMm.", "..mMMMMm..", "...mmmw...", "......ww..", ".....wwww.", "......ww.."],
+    sausage: ["..........", "..........", "..RRRRRR..", ".RHHHHRRR.", "sRRRRRRRRs", "sRRRRRRRRs", ".XRRRRRRX.", "..XXXXXX..", "..........", ".........."],
+    fries: ["..........", ".y.y..y.y.", ".yyy.yyyy.", ".yyyyyyyy.", "rrrrrrrrrr", "rrwrrrrwrr", ".rrrrrrrr.", ".rrrwwrrr.", "..rrrrrr..", "..rrrrrr.."],
+    popcorn: ["..ww.ww...", ".wwwwwwww.", "wwywwwyww.", ".wwwwwwww.", ".rwrwrwrw.", ".rwrwrwrw.", ".rwrwrwrw.", "..rwrwrw..", "..rwrwrw..", ".........."],
+    carrot: [".....g.g..", "......gg..", ".....aaa..", "....aaaa..", "...aaAa...", "...aaaa...", "..aAaa....", "..aaa.....", ".aa.......", ".a........"],
+    broccoli: ["..gg.gg...", ".gGggGgg..", "gggGgggGg.", "gGgggGggg.", ".ggggggg..", "...lll....", "...lll....", "...lll....", "..llll....", ".........."],
+  };
+  const CRAVINGS = [
+    { text: "I WANT SOMETHING SWEET!", foods: ["donut", "icecream"] },
+    { text: "GIVE ME FISH! NOW!", foods: ["fish", "tuna"] },
+    { text: "CHEESE... I NEED CHEESE!", foods: ["cheese", "pizza"] },
+    { text: "MEAT! FEED ME MEAT!", foods: ["drumstick", "sausage"] },
+    { text: "SOMETHING SALTY, PLEASE!", foods: ["fries", "popcorn"] },
+    { text: "UGH... SOMETHING GREEN.", foods: ["carrot", "broccoli"] },
+  ];
+  const FOOD_SIZE = 5;               // px per food pixel -> 50px sprites
+  const CAT_SCALE = 5;               // 64x58 cat -> 320x290
+  const CAT_W = 64, CAT_H = 58;
+  const CAT_X = (SIZE - CAT_W * CAT_SCALE) / 2, CAT_Y = SIZE - CAT_H * CAT_SCALE - 6;
+  const MOUTH = { x: CAT_X + 32 * CAT_SCALE, y: CAT_Y + 32 * CAT_SCALE };
+
+  function drawMap(c, map, x, y, size, pal, alpha = 1) {
+    c.globalAlpha = alpha;
+    for (let r = 0; r < map.length; r++)
+      for (let col = 0; col < map[r].length; col++) {
+        const ch = map[r][col];
+        if (ch === ".") continue;
+        c.fillStyle = pal[ch];
+        c.fillRect(Math.round(x + col * size), Math.round(y + r * size), size, size);
+      }
+    c.globalAlpha = 1;
+  }
+
+  // ---------- the cat, built pixel by pixel ----------
+  const catCanvas = document.createElement("canvas");
+  catCanvas.width = CAT_W; catCanvas.height = CAT_H;
+  const catCtx = catCanvas.getContext("2d");
+  const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+
+  function buildCat(mood, anger, now) {
+    const P = fluo
+      ? { fur: hex("#9b5cff"), dark: hex("#5a1fb8"), light: hex("#e0c8ff"), line: hex("#ff3df2"), pink: hex("#ff6fd8") }
+      : { fur: hex("#8d86a8"), dark: hex("#5a5370"), light: hex("#c4bfd6"), line: hex("#120a18"), pink: hex("#ff8fb0") };
+    const red = hex("#e0303a");
+    const tint = Math.max(0, (anger - 30) / 70) * 0.65;
+    const fur = mix(P.fur, red, tint), dark = mix(P.dark, red, tint * 0.6), light = mix(P.light, hex("#ffb0b0"), tint * 0.5);
+    const yellow = anger > 70 ? hex("#ff5040") : hex("#ffe14d");
+    const W = hex("#ffffff"), mouthC = hex("#3a0010"), collar = hex("#c0203a"), spike = hex("#e8e8f0");
+
+    const grid = new Array(CAT_W * CAT_H).fill(null);
+    const set = (x, y, c) => { x = Math.round(x); y = Math.round(y); if (x >= 0 && y >= 0 && x < CAT_W && y < CAT_H) grid[y * CAT_W + x] = c; };
+    const get = (x, y) => (x >= 0 && y >= 0 && x < CAT_W && y < CAT_H) ? grid[y * CAT_W + x] : null;
+    const ellipse = (cx, cy, rx, ry, c) => {
+      for (let y = Math.floor(cy - ry); y <= cy + ry; y++)
+        for (let x = Math.floor(cx - rx); x <= cx + rx; x++)
+          if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) set(x, y, c);
+    };
+    const tri = (a, b, c, col) => {
+      const minX = Math.min(a[0], b[0], c[0]), maxX = Math.max(a[0], b[0], c[0]);
+      const minY = Math.min(a[1], b[1], c[1]), maxY = Math.max(a[1], b[1], c[1]);
+      const s = (p, q, r) => (p[0] - r[0]) * (q[1] - r[1]) - (q[0] - r[0]) * (p[1] - r[1]);
+      for (let y = minY; y <= maxY; y++)
+        for (let x = minX; x <= maxX; x++) {
+          const pt = [x, y], d1 = s(pt, a, b), d2 = s(pt, b, c), d3 = s(pt, c, a);
+          if (!((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))) set(x, y, col);
+        }
+    };
+    const line = (x0, y0, x1, y1, c) => {
+      const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+      for (let i = 0; i <= n; i++) set(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, c);
+    };
+
+    // swishing striped tail (behind the body)
+    const swish = mood === "sleep" ? 0 : Math.sin(now / (anger > 60 ? 90 : 220));
+    for (let s = 0; s <= 1; s += 0.04) {
+      const x = 50 + 10 * s + swish * 4 * s, y = 48 - 32 * s;
+      ellipse(x, y, 3.4, 3.4, Math.floor(s * 8) % 2 ? dark : fur);
+    }
+    // fat body, belly, paws
+    ellipse(32, 44, 26, 14, fur);
+    ellipse(32, 47, 15, 9, light);
+    ellipse(20, 55, 6, 3, light);
+    ellipse(44, 55, 6, 3, light);
+    for (const px2 of [17, 20, 23, 41, 44, 47]) set(px2, 56, dark);
+    // body stripes
+    for (const x of [10, 13, 51, 54]) line(x, 38, x + (x < 32 ? 2 : -2), 46, dark);
+    // ears
+    tri([13, 2], [11, 18], [26, 10], fur);
+    tri([51, 2], [53, 18], [38, 10], fur);
+    tri([14, 6], [14, 15], [22, 11], P.pink);
+    tri([50, 6], [50, 15], [42, 11], P.pink);
+    // big round head with fat cheeks
+    ellipse(32, 21, 19, 14, fur);
+    ellipse(32, 27, 22, 9, fur);
+    ellipse(32, 30, 9, 5, light);
+    // forehead stripes
+    line(28, 9, 29, 14, dark); line(32, 8, 32, 14, dark); line(36, 9, 35, 14, dark);
+    // spiked collar
+    for (let x = 17; x <= 47; x++) { set(x, 36, collar); set(x, 37, collar); }
+    for (let x = 19; x <= 45; x += 5) { set(x, 38, spike); set(x + 1, 38, spike); set(x, 39, spike); }
+
+    // eyes
+    const eyes = [[24, 21, 1], [40, 21, -1]];
+    for (const [cx, cy, side] of eyes) {
+      if (mood === "yum" || mood === "sleep") {
+        for (let dx = -3; dx <= 3; dx++) set(cx + dx, cy - (mood === "yum" ? (3 - Math.abs(dx)) * 0.6 : 0), P.line);
+        continue;
+      }
+      ellipse(cx, cy, 4.2, 3.2, yellow);
+      // angry lid: cut the eye along a slant that dips toward the nose
+      for (let x = cx - 5; x <= cx + 5; x++) {
+        const lid = cy - 2 + (side > 0 ? (x - (cx - 4)) : ((cx + 4) - x)) * 0.45 + (mood === "hiss" ? 0 : 0);
+        for (let y = cy - 4; y < lid; y++) if (get(x, y) === yellow) set(x, y, fur);
+        set(x, lid - 1, P.line);
+        set(x, lid - 2, P.line);
+      }
+      const look = Math.round(Math.sin(now / 700) * 1.2);
+      for (let y = cy - 1; y <= cy + 2; y++) { set(cx + look, y, P.line); }
+      if (mood === "hiss") set(cx + look + 1, cy + 1, P.line);
+    }
+    // nose
+    set(31, 27, P.pink); set(32, 27, P.pink); set(33, 27, P.pink); set(32, 28, P.pink);
+    // mouth
+    if (mood === "hiss") {
+      ellipse(32, 32, 6, 3.5, mouthC);
+      ellipse(32, 34, 3, 1.2, P.pink);
+      set(28, 30, W); set(28, 31, W); set(36, 30, W); set(36, 31, W);
+    } else if (mood === "yum") {
+      const chew = Math.floor(now / 120) % 2;
+      line(28, 30 + chew, 30, 31, P.line); line(30, 31, 32, 30, P.line); line(32, 30, 34, 31, P.line); line(34, 31, 36, 30 + chew, P.line);
+    } else if (mood === "sleep") {
+      line(30, 31, 34, 31, P.line);
+    } else {
+      ellipse(32, 31.5, 4, 2, mouthC);
+      set(30, 30, W); set(30, 31, W); set(34, 30, W); set(34, 31, W);
+    }
+    // whiskers
+    const wc = fluo ? hex("#13e8ff") : W;
+    line(21, 29, 8, 26, wc); line(21, 31, 7, 32, wc);
+    line(43, 29, 56, 26, wc); line(43, 31, 57, 32, wc);
+
+    // outline everything
+    const out = grid.slice();
+    for (let y = 0; y < CAT_H; y++)
+      for (let x = 0; x < CAT_W; x++)
+        if (!get(x, y) && (get(x - 1, y) || get(x + 1, y) || get(x, y - 1) || get(x, y + 1)))
+          out[y * CAT_W + x] = P.line;
+
+    const img = catCtx.createImageData(CAT_W, CAT_H);
+    out.forEach((c, i) => {
+      if (!c) return;
+      img.data[i * 4] = c[0]; img.data[i * 4 + 1] = c[1]; img.data[i * 4 + 2] = c[2]; img.data[i * 4 + 3] = 255;
+    });
+    catCtx.putImageData(img, 0, 0);
+    return catCanvas;
+  }
+
+  // ---------- boss flow ----------
+  function startBoss(now) {
+    boss = {
+      phase: "intro", start: now, anger: L().boss.anger, fed: 0, need: L().boss.need,
+      craving: null, reqStart: 0, reqDur: 6000, foods: [], nextSpawn: 0, lastGood: 0,
+      mood: "angry", moodUntil: 0, shakeUntil: 0, msg: null, steamAt: 0, pausedFrom: now,
+    };
+    particles = [];
+    startTransition("in", now, () => { state = "boss"; boss.start = performance.now(); }, "boss");
+    tone(220, 0.25, "sawtooth", 110, 1.0, 0.1);
+  }
+
+  function newCraving(now) {
+    const prev = boss.craving;
+    let c;
+    do { c = pick(CRAVINGS); } while (c === prev);
+    boss.craving = c;
+    boss.reqStart = now;
+    boss.reqDur = Math.max(L().boss.reqMin, L().boss.reqBase - boss.fed * 600);
+    boss.lastGood = 0;
+    tone(330, 0.08, "square"); tone(262, 0.12, "square", null, 0.08);
+  }
+
+  function spawnFlyingFood(now) {
+    const needGood = now - boss.lastGood > 1300 || Math.random() < 0.38;
+    const name = needGood ? pick(boss.craving.foods)
+      : pick(Object.keys(FOODS).filter(f => !boss.craving.foods.includes(f)));
+    if (needGood) boss.lastGood = now;
+    const fromLeft = Math.random() < 0.5;
+    const speed = 170 + Math.random() * 110 + boss.fed * 18;
+    boss.foods.push({
+      name, x: fromLeft ? -60 : SIZE + 10, y: 150 + Math.random() * 330,
+      vx: fromLeft ? speed : -speed, wob: Math.random() * 6, amp: 10 + Math.random() * 30,
+      born: now, state: "fly",
+    });
+  }
+
+  function catMood(m, now, ms) { boss.mood = m; boss.moodUntil = now + ms; }
+  function catSay(text, now, color) { boss.msg = { text, t: now, color }; }
+
+  function feed(f, now) {
+    const good = boss.craving.foods.includes(f.name);
+    if (good) {
+      f.state = "eaten"; f.t = now; f.sx = f.x; f.sy = f.y;
+      boss.fed++;
+      boss.anger = Math.max(0, boss.anger - 20);
+      catMood("yum", now, 900);
+      catSay(pick(["YUM!", "PURRR...", "GNAM GNAM!", "GOOD DOG!"]), now, "#3fff7a");
+      tone(523, 0.08, "triangle"); tone(784, 0.12, "triangle", null, 0.08); tone(1047, 0.14, "triangle", null, 0.16);
+      if (boss.fed >= boss.need) return winBoss(now);
+      boss.craving = null;
+      boss.nextCraving = now + 900;
+    } else {
+      f.state = "gone";
+      burstAt(f.x + 25, f.y + 25, 14, ["#ff2a6d", "#ffffff", "#ffd84a"]);
+      angerUp(L().boss.wrong, now, pick(["HISSSS!", "YUCK!", "WRONG!!", "GRRRR!"]));
+    }
+  }
+
+  function angerUp(n, now, text) {
+    boss.anger = Math.min(100, boss.anger + n);
+    catMood("hiss", now, 700);
+    boss.shakeUntil = now + 450;
+    catSay(text, now, "#ff2a6d");
+    tone(180, 0.25, "sawtooth", 90, 0, 0.12);
+    if (boss.anger >= 100) loseBoss(now);
+  }
+
+  function winBoss(now) {
+    boss.phase = "win";
+    boss.end = now;
+    boss.foods.forEach(f => { if (f.state === "fly") f.state = "gone"; });
+    catMood("sleep", now, 1e9);
+    catSay("ZZZ... GATTO KO!", now, "#fff700");
+    [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.12, "square", null, i * 0.1));
+    setTimeout(() => {
+      if (state !== "boss") return;
+      const t = performance.now();
+      startTransition("out", t, back => {
+        const away = back - boss.pausedFrom;
+        shiftTimers(away);
+        score += 1000;
+        effects.ghost = back + 2500; // a moment to untangle
+        popups.push({ x: snake[0].x, y: snake[0].y, text: "+1000 GATTO KO!", t: back, golden: true });
+        startTransition("in", back, () => { state = "playing"; lastTime = performance.now(); acc = 0; boss = null; updateHud(); }, "game");
+      }, "boss");
+    }, 2200);
+  }
+
+  function loseBoss(now) {
+    boss.phase = "lose";
+    boss.end = now;
+    catSay("MINE!!!", now, "#ff2a6d");
+    setTimeout(() => { if (state === "boss") gameOver(performance.now()); }, 900);
+  }
+
+  function updateBoss(now) {
+    if (!boss) return;
+    if (boss.phase === "intro" && now - boss.start > 1600) {
+      boss.phase = "play";
+      newCraving(now);
+      boss.nextSpawn = now;
+    }
+    if (boss.phase !== "play") return;
+    if (!boss.craving && now > boss.nextCraving) newCraving(now);
+    if (boss.craving) {
+      if (now > boss.nextSpawn) {
+        spawnFlyingFood(now);
+        boss.nextSpawn = now + Math.max(380, L().boss.spawn - boss.fed * 50);
+      }
+      if (now - boss.reqStart > boss.reqDur) {
+        angerUp(L().boss.slow, now, "TOO SLOW!!");
+        if (boss.phase === "play") newCraving(now);
+      }
+    }
+  }
+
+  // click / tap on flying food
+  canvas.addEventListener("pointerdown", e => {
+    if (state !== "boss" || !boss || boss.phase !== "play" || !boss.craving) return;
+    const r = canvas.getBoundingClientRect();
+    const x = (e.clientX - r.left) * SIZE / r.width, y = (e.clientY - r.top) * SIZE / r.height;
+    const now = performance.now();
+    let best = null, bestD = 44;
+    for (const f of boss.foods) {
+      if (f.state !== "fly") continue;
+      const d = Math.hypot(f.x + 25 - x, f.y + 25 - y);
+      if (d < bestD) { best = f; bestD = d; }
+    }
+    if (best) feed(best, now);
+  });
+
+  // ---------- boss rendering ----------
+  function bossText(c, text, x, y, size, color, align = "center", glow = false) {
+    c.font = `${size}px "Press Start 2P", monospace`;
+    c.textAlign = align;
+    c.textBaseline = "middle";
+    c.fillStyle = "#000";
+    c.fillText(text, x + 2, y + 2);
+    if (glow) { c.shadowColor = color; c.shadowBlur = 12; }
+    c.fillStyle = color;
+    c.fillText(text, x, y);
+    c.shadowBlur = 0;
+    c.textBaseline = "alphabetic";
+  }
+
+  function meter(c, x, y, w, label, value, color, now) {
+    bossText(c, label, x, y - 12, 10, "#ffffff", "left");
+    c.fillStyle = "#000";
+    c.fillRect(x - 3, y - 3, w + 6, 22);
+    c.fillStyle = fluo ? "#1a0a30" : "#3a2a40";
+    c.fillRect(x, y, w, 16);
+    const fill = Math.round(w * Math.max(0, Math.min(1, value)));
+    c.fillStyle = color;
+    c.fillRect(x, y, fill, 16);
+    c.fillStyle = "rgba(255,255,255,0.35)";
+    c.fillRect(x, y, fill, 4);
+    for (let i = 1; i < 10; i++) { c.fillStyle = "rgba(0,0,0,0.35)"; c.fillRect(x + (w / 10) * i, y, 2, 16); }
+  }
+
+  function renderBoss(now, out = mainCtx, dt = 16) {
+    if (!boss) return;
+    out.save();
+    // arena
+    if (fluo) {
+      out.fillStyle = "#0b0618";
+      out.fillRect(0, 0, SIZE, SIZE);
+      const g = out.createRadialGradient(SIZE / 2, SIZE * 0.75, 20, SIZE / 2, SIZE * 0.75, SIZE * 0.7);
+      g.addColorStop(0, `rgba(255,61,242,${0.25 + boss.anger / 300})`);
+      g.addColorStop(1, "rgba(11,6,24,0)");
+      out.fillStyle = g;
+      out.fillRect(0, 0, SIZE, SIZE);
+      out.fillStyle = "rgba(19,232,255,0.12)";
+      for (let i = 0; i <= GRID; i++) { out.fillRect(0, SIZE - i * i * 1.5, SIZE, 2); }
+    } else {
+      for (let y = 0; y < GRID; y++)
+        for (let x = 0; x < GRID; x++) {
+          out.fillStyle = (x + y) % 2 ? "#5a3a50" : "#503448";
+          out.fillRect(x * CELL, y * CELL, CELL, CELL);
+        }
+      const g = out.createRadialGradient(SIZE / 2, SIZE * 0.78, 20, SIZE / 2, SIZE * 0.78, SIZE * 0.6);
+      g.addColorStop(0, `rgba(255,200,120,${0.35 - boss.anger / 500})`);
+      g.addColorStop(1, "rgba(0,0,0,0.35)");
+      out.fillStyle = g;
+      out.fillRect(0, 0, SIZE, SIZE);
+    }
+    if (boss.anger > 70) {
+      out.fillStyle = `rgba(255,0,40,${0.08 + 0.06 * Math.sin(now / 120)})`;
+      out.fillRect(0, 0, SIZE, SIZE);
+    }
+
+    // sprites (cat, food, particles) -> layer for FLUO bloom
+    const c = fluo ? layerCtx : out;
+    if (fluo) c.clearRect(0, 0, SIZE, SIZE);
+    c.imageSmoothingEnabled = false;
+
+    const mood = boss.phase === "intro" ? "hiss" : (now < boss.moodUntil ? boss.mood : "angry");
+    const cat = buildCat(mood, boss.anger, now);
+    let sc = CAT_SCALE, cx = CAT_X, cy = CAT_Y;
+    const breathe = Math.round(Math.sin(now / 400) * 3);
+    if (boss.phase === "lose") {
+      const k = Math.min(1, (now - boss.end) / 700);
+      sc = CAT_SCALE + k * 5;
+      cx = SIZE / 2 - (CAT_W * sc) / 2;
+      cy = SIZE - CAT_H * sc + k * 60;
+    }
+    if (boss.phase === "intro") {
+      const k = Math.min(1, (now - boss.start) / 500);
+      cy = CAT_Y + (1 - k) * 300;
+    }
+    if (now < boss.shakeUntil) cx += Math.round((Math.random() - 0.5) * 14);
+    c.drawImage(cat, cx, cy - breathe, CAT_W * sc, CAT_H * sc + breathe);
+
+    // steam from the ears when angry
+    if (boss.anger >= 60 && boss.phase !== "win") {
+      for (let i = 0; i < 4; i++) {
+        const p = ((now / 900) + i / 4) % 1;
+        const side = i % 2 ? 1 : -1;
+        const sx = SIZE / 2 + side * (95 + p * 30), sy = CAT_Y + 10 - p * 70;
+        c.globalAlpha = 1 - p;
+        c.fillStyle = fluo ? "#ffffff" : "#e8e0f0";
+        c.fillRect(Math.round(sx / 5) * 5, Math.round(sy / 5) * 5, 10 + p * 10, 10 + p * 10);
+      }
+      c.globalAlpha = 1;
+    }
+
+    // flying foods
+    boss.foods = boss.foods.filter(f => f.state !== "gone" && f.x > -80 && f.x < SIZE + 80);
+    for (const f of boss.foods) {
+      if (f.state === "fly") {
+        f.x += f.vx * dt / 1000;
+        const y = f.y + Math.sin((now - f.born) / 260 + f.wob) * f.amp;
+        f.drawY = y;
+        drawMap(c, FOODS[f.name], f.x, y, FOOD_SIZE, FOOD_PAL);
+      } else if (f.state === "eaten") {
+        const k = Math.min(1, (now - f.t) / 350);
+        const x = f.sx + (MOUTH.x - 25 - f.sx) * k, y = (f.drawY || f.sy) + (MOUTH.y - 25 - (f.drawY || f.sy)) * k;
+        drawMap(c, FOODS[f.name], x + 25 * k, y + 25 * k, FOOD_SIZE * (1 - k * 0.8), FOOD_PAL);
+        if (k >= 1) { f.state = "gone"; burstAt(MOUTH.x, MOUTH.y, 10, ["#3fff7a", "#ffffff", "#fff700"], 0.6); }
+      }
+    }
+    // keep hit-testing in sync with the wobble
+    for (const f of boss.foods) if (f.drawY !== undefined) f.y = f.y; // (position used below)
+
+    // particles
+    particles = particles.filter(p => (p.life += dt) < p.max);
+    for (const p of particles) {
+      p.x += p.vx * dt / 1000; p.y += p.vy * dt / 1000; p.vx *= 0.94; p.vy *= 0.94;
+      c.fillStyle = p.color;
+      c.fillRect(Math.round(p.x / 3) * 3, Math.round(p.y / 3) * 3, 6, 6);
+    }
+    if (fluo) bloom(out);
+
+    // HUD: meters
+    meter(out, 24, 34, 250, "HUNGER", boss.fed / boss.need, "#3fff7a", now);
+    meter(out, SIZE - 274, 34, 250, "ANGER", boss.anger / 100, boss.anger > 70 ? "#ff2a3a" : "#ff8a1e", now);
+    for (let i = 0; i < boss.need; i++) {
+      const fx = 24 + i * 22, fy = 64;
+      out.globalAlpha = i < boss.fed ? 1 : 0.25;
+      drawMap(out, FOODS.sausage, fx, fy, 2, FOOD_PAL);
+    }
+    out.globalAlpha = 1;
+
+    // speech bubble with the craving + timer
+    const bubbleText = boss.phase === "intro" ? "WHO WOKE ME UP?!"
+      : boss.msg && now - boss.msg.t < 800 ? boss.msg.text
+      : boss.craving ? boss.craving.text
+      : boss.msg ? boss.msg.text : "";
+    if (bubbleText) {
+      const bw = Math.min(560, bubbleText.length * 14 + 40), bh = 56;
+      const bx = (SIZE - bw) / 2, by = CAT_Y - 92;
+      out.fillStyle = "#000";
+      out.fillRect(bx - 4, by - 4, bw + 8, bh + 8);
+      out.fillStyle = "#ffffff";
+      out.fillRect(bx, by, bw, bh);
+      out.fillRect(SIZE / 2 - 10, by + bh, 20, 8);
+      out.fillRect(SIZE / 2 - 4, by + bh + 8, 8, 8);
+      out.fillStyle = "#000";
+      out.fillRect(SIZE / 2 - 14, by + bh + 4, 4, 8);
+      out.fillRect(SIZE / 2 + 10, by + bh + 4, 4, 8);
+      const isMsg = boss.msg && now - boss.msg.t < 800 && bubbleText === boss.msg.text;
+      bossText(out, bubbleText, SIZE / 2, by + 24, 13, isMsg ? boss.msg.color : "#1a0a20");
+      if (boss.craving && boss.phase === "play") {
+        const left = 1 - (now - boss.reqStart) / boss.reqDur;
+        out.fillStyle = "#ddd";
+        out.fillRect(bx + 12, by + bh - 14, bw - 24, 6);
+        out.fillStyle = left < 0.3 ? "#ff2a3a" : "#ff3df2";
+        out.fillRect(bx + 12, by + bh - 14, Math.max(0, (bw - 24) * left), 6);
+      }
+    }
+
+    // banners
+    if (boss.phase === "intro") {
+      const k = Math.min(1, (now - boss.start) / 300);
+      bossText(out, "BOSS FIGHT!", SIZE / 2, 118 + (1 - k) * -60, 30, "#fff700", "center", fluo);
+      bossText(out, "GATTO CICCIONE", SIZE / 2, 156, 16, "#ff3df2", "center", fluo);
+      bossText(out, "TAP THE FOOD HE ASKS FOR", SIZE / 2, 184, 10, "#ffffff");
+    } else if (boss.phase === "win") {
+      bossText(out, "GATTO KO!  +1000", SIZE / 2, 150, 22, "#fff700", "center", fluo);
+    }
+    out.restore();
   }
 
   // ---------- loop ----------
@@ -924,7 +1655,10 @@
       }
       if (isNeon()) updateHud(now);
     }
-    if (state !== "menu" && snake) render(now);
+    if (state === "boss") updateBoss(now);
+    if (state === "transition") renderTransition(now);
+    else if (state === "boss" || (state === "over" && boss && boss.phase === "lose")) renderBoss(now, mainCtx, frameDt(now));
+    else if (state !== "menu" && snake) render(now);
     requestAnimationFrame(frame);
   }
 

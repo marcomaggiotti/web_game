@@ -23,11 +23,16 @@
           <button class="opt" data-mode="neon" aria-pressed="false">NEON</button>
         </div>
         <p class="modeDesc" id="modeDesc"></p>
+        <div class="seg" role="group" aria-label="Level">
+          <button class="opt" data-level="easy" aria-pressed="false">EASY</button>
+          <button class="opt" data-level="medium" aria-pressed="true">MEDIUM</button>
+          <button class="opt" data-level="hard" aria-pressed="false">HARD</button>
+        </div>
         <button class="opt fluoBtn" aria-pressed="false">FLUO <span class="state">OFF</span></button>
       </div>
       <button id="startBtn" class="btn blink">&#9654; START GAME</button>
       <p class="hint">ARROWS / WASD / SWIPE &middot; F = FLUO</p>
-      <p class="hi">HI-SCORE &middot; CLASSIC <span id="hiClassic">0</span> &middot; NEON <span id="hiNeon">0</span></p>
+      <p class="hi">HI-SCORE <span id="hiWhich">CLASSIC MEDIUM</span>: <span id="hiLanding">0</span></p>
     </section>
 
     <!-- GAME -->
